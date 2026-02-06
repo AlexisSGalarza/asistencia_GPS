@@ -2,7 +2,6 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
-from django.contrib.auth.hashers import check_password
 from .models import Rol, Usuario, Horario
 from .serializers import RolSerializer, UsuarioSerializer, HorarioSerializer
 
@@ -31,7 +30,7 @@ class UsuarioViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['post'])
     def login(self, request):
         """
-        Endpoint de login básico
+        Endpoint de login con verificación de contraseña hasheada
         """
         correo = request.data.get('correo')
         password = request.data.get('password')
@@ -44,8 +43,8 @@ class UsuarioViewSet(viewsets.ModelViewSet):
         
         try:
             usuario = Usuario.objects.get(correo=correo, activo=True)
-            # En producción deberías usar hash para comparar contraseñas
-            if usuario.password == password:
+            # Verificar contraseña hasheada
+            if usuario.check_password(password):
                 serializer = self.get_serializer(usuario)
                 return Response({
                     'mensaje': 'Login exitoso',

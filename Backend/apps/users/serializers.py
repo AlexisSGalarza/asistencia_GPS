@@ -17,13 +17,24 @@ class UsuarioSerializer(serializers.ModelSerializer):
         }
     
     def create(self, validated_data):
-        # Hash de la contraseña antes de guardar
+        """Crea un usuario con contraseña hasheada"""
         password = validated_data.pop('password')
         usuario = Usuario(**validated_data)
-        # Aquí deberías usar un hash real en producción (ej: bcrypt)
-        usuario.password = password
+        usuario.set_password(password)
         usuario.save()
         return usuario
+    
+    def update(self, instance, validated_data):
+        """Actualiza un usuario, hasheando la contraseña si se proporciona"""
+        password = validated_data.pop('password', None)
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        
+        if password:
+            instance.set_password(password)
+        
+        instance.save()
+        return instance
 
 class HorarioSerializer(serializers.ModelSerializer):
     usuario_nombre = serializers.CharField(source='usuario.nombre', read_only=True)

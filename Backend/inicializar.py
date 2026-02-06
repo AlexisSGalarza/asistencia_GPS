@@ -28,23 +28,25 @@ def crear_admin():
     try:
         rol_admin = Rol.objects.get(nombre='Administrador')
         
-        admin, created = Usuario.objects.get_or_create(
-            correo='admin@asistencia.com',
-            defaults={
-                'nombre': 'Administrador del Sistema',
-                'password': 'admin123',  # Cambiar en producción
-                'rol': rol_admin,
-                'activo': True
-            }
-        )
-        
-        if created:
-            print(f'✓ Usuario administrador creado')
-            print(f'  Correo: admin@asistencia.com')
-            print(f'  Password: admin123')
-            print(f'  ⚠️  CAMBIAR CONTRASEÑA EN PRODUCCIÓN')
-        else:
+        # Verificar si ya existe
+        if Usuario.objects.filter(correo='admin@asistencia.com').exists():
             print(f'- Usuario administrador ya existe')
+            return
+        
+        # Crear nuevo usuario
+        admin = Usuario(
+            correo='admin@asistencia.com',
+            nombre='Administrador del Sistema',
+            rol=rol_admin,
+            activo=True
+        )
+        admin.set_password('admin123')  # Contraseña hasheada
+        admin.save()
+        
+        print(f'✓ Usuario administrador creado')
+        print(f'  Correo: admin@asistencia.com')
+        print(f'  Password: admin123')
+        print(f'  ⚠️  CAMBIAR CONTRASEÑA EN PRODUCCIÓN')
             
     except Rol.DoesNotExist:
         print('✗ Error: Debes crear los roles primero')
