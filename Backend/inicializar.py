@@ -46,7 +46,11 @@ def crear_admin():
         print(f'✓ Usuario administrador creado')
         print(f'  Correo: admin@asistencia.com')
         print(f'  Password: admin123')
-        print(f'  ⚠️  CAMBIAR CONTRASEÑA EN PRODUCCIÓN')
+        print(f'\n⚠️  ⚠️  ADVERTENCIA DE SEGURIDAD ⚠️  ⚠️')
+        print(f'  Esta es una contraseña DÉBIL de demostración')
+        print(f'  DEBE cambiarla inmediatamente por una contraseña segura')
+        print(f'  Nunca use contraseñas simples en producción')
+        print(f'  Recomendado: 12+ caracteres con mayúsculas, minúsculas, números y símbolos')
             
     except Rol.DoesNotExist:
         print('✗ Error: Debes crear los roles primero')

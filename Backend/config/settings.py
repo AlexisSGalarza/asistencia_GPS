@@ -134,6 +134,12 @@ USE_TZ = True
 STATIC_URL = 'static/'
 
 # CORS Configuration
+# ⚠️ WARNING: Solo para DESARROLLO
+# En PRODUCCIÓN, cambiar a una lista específica de dominios:
+# CORS_ALLOWED_ORIGINS = [
+#     "https://tudominio.com",
+#     "https://app.tudominio.com",
+# ]
 CORS_ALLOW_ALL_ORIGINS = True  # Permite que cualquier dispositivo se conecte durante desarrollo
 
 # Django REST Framework Configuration
