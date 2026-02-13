@@ -1,0 +1,105 @@
+import 'package:flutter/material.dart';
+import '../login/login_screen.dart';
+
+class SplashScreen extends StatefulWidget {
+  const SplashScreen({super.key});
+
+  @override
+  State<SplashScreen> createState() => _SplashScreenState();
+}
+
+class _SplashScreenState extends State<SplashScreen> {
+  @override
+  void initState() {
+    super.initState();
+    // Espera 3 segundos y luego navega al Login
+    Future.delayed(const Duration(seconds: 3), () {
+      if (mounted) {
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (_) => const LoginScreen()),
+        );
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF1E9F8), // Tu color #A98BC3
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            // Logo de la app
+            Container(
+              width: 150,
+              height: 150,
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(30),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.2),
+                    blurRadius: 20,
+                    offset: const Offset(0, 10),
+                  ),
+                ],
+              ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(30),
+                // Si ya tienes logo.png en assets/images/, usa Image.asset
+                // Si no, muestra un ícono temporal
+                child: Image.asset(
+                  'assets/images/logo.png',
+                  fit: BoxFit.cover,
+                  errorBuilder: (context, error, stackTrace) {
+                    // Ícono temporal mientras no tengas el logo
+                    return const Icon(
+                      Icons.location_on,
+                      size: 80,
+                      color: Color(0xFFA98BC3),
+                    );
+                  },
+                ),
+              ),
+            ),
+
+            const SizedBox(height: 30),
+
+            // Nombre de la app
+            const Text(
+              'Asistencia GPS',
+              style: TextStyle(
+                fontSize: 32,
+                fontWeight: FontWeight.bold,
+                color: Colors.white,
+                letterSpacing: 2,
+              ),
+            ),
+
+            const SizedBox(height: 10),
+
+            // Subtítulo
+            Text(
+              'Control de asistencia inteligente',
+              style: TextStyle(
+                fontSize: 16,
+                color: Colors.white.withValues(alpha: 0.8),
+                letterSpacing: 1,
+              ),
+            ),
+
+            const SizedBox(height: 50),
+
+            // Indicador de carga
+            const CircularProgressIndicator(
+              color: Colors.white,
+              strokeWidth: 3,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
