@@ -3,6 +3,25 @@ from math import radians, sin, cos, sqrt, atan2
 from apps.users.models import Usuario
 
 
+class RedAutorizada(models.Model):
+    """Red Wi-Fi autorizada para validar presencia física en la institución."""
+    nombre = models.CharField(max_length=100, help_text='Nombre descriptivo de la red (ej: Sala de maestros)')
+    ssid = models.CharField(max_length=100, help_text='Nombre de la red Wi-Fi (SSID)')
+    bssid = models.CharField(max_length=17, help_text='MAC del punto de acceso (formato XX:XX:XX:XX:XX:XX)')
+    descripcion = models.TextField(blank=True, default='', help_text='Ubicación o detalles del access point')
+    activo = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = 'Red Autorizada'
+        verbose_name_plural = 'Redes Autorizadas'
+        unique_together = ['ssid', 'bssid']
+
+    def __str__(self):
+        estado = "✅" if self.activo else "❌"
+        return f"{estado} {self.nombre} — SSID: {self.ssid} | BSSID: {self.bssid}"
+
+
 class Perimetro(models.Model):
     """Zona geográfica válida para registrar asistencia."""
     nombre = models.CharField(max_length=100)
@@ -47,9 +66,16 @@ class Asistencia(models.Model):
 
     usuario = models.ForeignKey(Usuario, on_delete=models.CASCADE, related_name='asistencias')
     perimetro = models.ForeignKey(Perimetro, on_delete=models.CASCADE, related_name='asistencias')
+    red_autorizada = models.ForeignKey(
+        RedAutorizada, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='asistencias', help_text='Red Wi-Fi usada al registrar',
+    )
     tipo = models.CharField(max_length=10, choices=Tipo.choices)
     latitud_real = models.DecimalField(max_digits=9, decimal_places=6)
     longitud_real = models.DecimalField(max_digits=9, decimal_places=6)
+    ssid_conectado = models.CharField(max_length=100, blank=True, default='', help_text='SSID del dispositivo al registrar')
+    bssid_conectado = models.CharField(max_length=17, blank=True, default='', help_text='BSSID del dispositivo al registrar')
+    wifi_valido = models.BooleanField(default=False, help_text='Si la red Wi-Fi coincide con una autorizada')
     fecha_hora = models.DateTimeField(auto_now_add=True)
     valido = models.BooleanField(default=False)
     distancia_metros = models.FloatField(default=0, help_text='Distancia al centro del perímetro en metros')

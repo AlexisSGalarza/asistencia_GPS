@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import '../../services/api_service.dart';
 import '../login/login_screen.dart';
+import '../maestro/marcar_asistencia_screen.dart';
 
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
@@ -12,15 +14,31 @@ class _SplashScreenState extends State<SplashScreen> {
   @override
   void initState() {
     super.initState();
-    // Espera 3 segundos y luego navega al Login
-    Future.delayed(const Duration(seconds: 3), () {
-      if (mounted) {
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (_) => const LoginScreen()),
-        );
-      }
-    });
+    _iniciarApp();
+  }
+
+  Future<void> _iniciarApp() async {
+    // Dar tiempo para mostrar el splash
+    await Future.delayed(const Duration(seconds: 2));
+
+    if (!mounted) return;
+
+    // Intentar restaurar sesión
+    final sesionActiva = await ApiService.restaurarSesion();
+
+    if (!mounted) return;
+
+    if (sesionActiva) {
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (_) => const MarcarAsistenciaScreen()),
+      );
+    } else {
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (_) => const LoginScreen()),
+      );
+    }
   }
 
   @override

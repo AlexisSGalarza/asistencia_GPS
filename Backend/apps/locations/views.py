@@ -3,16 +3,24 @@ from rest_framework.response import Response
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from django.utils import timezone
-from datetime import date, timedelta, datetime
+from datetime import date, timedelta, datetime, time
 
 from common.permissions import EsAdministrador, EsSupervisorOAdmin, EsUsuarioAutenticado
-from apps.users.models import Usuario, Rol
+from apps.users.models import Usuario, Rol, Horario
 
-from .models import Perimetro, Asistencia, Incidencia
+from .models import Perimetro, Asistencia, Incidencia, RedAutorizada
 from .serializers import (
     PerimetroSerializer, AsistenciaSerializer,
     RegistrarAsistenciaSerializer, IncidenciaSerializer,
+    RedAutorizadaSerializer,
 )
+
+# Minutos de tolerancia para considerar retardo (ej: 15 min después de hora_entrada)
+TOLERANCIA_RETARDO_MIN = 10
+# Minutos antes de hora_salida para considerar salida temprana
+TOLERANCIA_SALIDA_TEMPRANA_MIN = 15
+# Horas después de la entrada para auto-registrar salida
+AUTO_SALIDA_HORAS = 10
 
 
 # ──────────────────────────────────────────────
@@ -23,7 +31,8 @@ class RegistrarAsistenciaView(APIView):
     """
     POST /api/asistencia/registrar/
     El maestro envía su lat/lng y tipo (entrada/salida).
-    El sistema valida si está dentro del perímetro.
+    El sistema valida si está dentro del perímetro y compara
+    la hora contra el horario asignado para generar incidencias.
     """
     permission_classes = [EsUsuarioAutenticado]
 
@@ -36,17 +45,221 @@ class RegistrarAsistenciaView(APIView):
         asistencia = serializer.save()
 
         response_data = AsistenciaSerializer(asistencia).data
-        if asistencia.valido:
-            response_data['mensaje'] = 'Asistencia registrada correctamente.'
-        else:
+
+        # ── Validación de perímetro ──
+        if not asistencia.valido:
             response_data['mensaje'] = (
                 f'Estás fuera del perímetro. '
                 f'Distancia: {asistencia.distancia_metros}m '
                 f'(máximo permitido: {asistencia.perimetro.radio_metros}m). '
                 f'Se registró como INVÁLIDA.'
             )
+            response_data['estado_horario'] = 'fuera_de_perimetro'
+            return Response(response_data, status=status.HTTP_201_CREATED)
+
+        # ── Validación contra horario ──
+        usuario = request.usuario
+        ahora = timezone.localtime()
+        # Python: weekday() → 0=Lunes ... 6=Domingo (coincide con dia_semana del modelo)
+        dia_actual = ahora.weekday()
+
+        horario = Horario.objects.filter(
+            usuario=usuario,
+            dia_semana=dia_actual,
+        ).first()
+
+        if not horario:
+            response_data['mensaje'] = (
+                'Asistencia registrada. No tienes horario asignado para hoy.'
+            )
+            response_data['estado_horario'] = 'sin_horario'
+            return Response(response_data, status=status.HTTP_201_CREATED)
+
+        hora_actual = ahora.time()
+        incidencia_creada = None
+
+        if asistencia.tipo == Asistencia.Tipo.ENTRADA:
+            incidencia_creada = self._validar_entrada(
+                usuario, horario, hora_actual, ahora.date()
+            )
+        elif asistencia.tipo == Asistencia.Tipo.SALIDA:
+            incidencia_creada = self._validar_salida(
+                usuario, horario, hora_actual, ahora.date()
+            )
+
+        # ── Construir respuesta con feedback ──
+        if incidencia_creada:
+            response_data['incidencia'] = IncidenciaSerializer(incidencia_creada).data
+
+            if incidencia_creada.tipo == Incidencia.Tipo.RETARDO:
+                minutos_tarde = self._diferencia_minutos(horario.hora_entrada, hora_actual)
+                response_data['mensaje'] = (
+                    f'⚠️ Retardo registrado. Llegaste {minutos_tarde} minutos tarde. '
+                    f'Tu hora de entrada es {horario.hora_entrada.strftime("%H:%M")} '
+                    f'y marcaste a las {hora_actual.strftime("%H:%M")}.'
+                )
+                response_data['estado_horario'] = 'retardo'
+            elif incidencia_creada.tipo == Incidencia.Tipo.SALIDA_TEMPRANA:
+                minutos_antes = self._diferencia_minutos(hora_actual, horario.hora_salida)
+                response_data['mensaje'] = (
+                    f'⚠️ Salida temprana registrada. Saliste {minutos_antes} minutos antes. '
+                    f'Tu hora de salida es {horario.hora_salida.strftime("%H:%M")} '
+                    f'y marcaste a las {hora_actual.strftime("%H:%M")}.'
+                )
+                response_data['estado_horario'] = 'salida_temprana'
+        else:
+            if asistencia.tipo == Asistencia.Tipo.ENTRADA:
+                response_data['mensaje'] = (
+                    f'✅ Entrada registrada a tiempo. '
+                    f'Hora de entrada: {horario.hora_entrada.strftime("%H:%M")}, '
+                    f'marcaste a las {hora_actual.strftime("%H:%M")}.'
+                )
+                response_data['estado_horario'] = 'a_tiempo'
+            else:
+                response_data['mensaje'] = (
+                    f'✅ Salida registrada correctamente. '
+                    f'Hora de salida: {horario.hora_salida.strftime("%H:%M")}, '
+                    f'marcaste a las {hora_actual.strftime("%H:%M")}.'
+                )
+                response_data['estado_horario'] = 'a_tiempo'
 
         return Response(response_data, status=status.HTTP_201_CREATED)
+
+    def _validar_entrada(self, usuario, horario, hora_actual, fecha_hoy):
+        """
+        Compara la hora de marcado contra hora_entrada del horario.
+        Si llega después de hora_entrada + tolerancia → crea incidencia de retardo.
+        """
+        from datetime import timedelta as td
+
+        hora_limite = self._sumar_minutos(horario.hora_entrada, TOLERANCIA_RETARDO_MIN)
+
+        if hora_actual > hora_limite:
+            minutos = self._diferencia_minutos(horario.hora_entrada, hora_actual)
+            incidencia, _ = Incidencia.objects.get_or_create(
+                usuario=usuario,
+                tipo=Incidencia.Tipo.RETARDO,
+                fecha=fecha_hoy,
+                defaults={
+                    'descripcion': (
+                        f'Retardo automático. Hora de entrada programada: '
+                        f'{horario.hora_entrada.strftime("%H:%M")}, '
+                        f'hora registrada: {hora_actual.strftime("%H:%M")} '
+                        f'({minutos} min tarde).'
+                    ),
+                },
+            )
+            return incidencia
+        return None
+
+    def _validar_salida(self, usuario, horario, hora_actual, fecha_hoy):
+        """
+        Compara la hora de marcado contra hora_salida del horario.
+        Si sale antes de hora_salida - tolerancia → crea incidencia de salida temprana.
+        """
+        hora_limite = self._restar_minutos(horario.hora_salida, TOLERANCIA_SALIDA_TEMPRANA_MIN)
+
+        if hora_actual < hora_limite:
+            minutos = self._diferencia_minutos(hora_actual, horario.hora_salida)
+            incidencia, _ = Incidencia.objects.get_or_create(
+                usuario=usuario,
+                tipo=Incidencia.Tipo.SALIDA_TEMPRANA,
+                fecha=fecha_hoy,
+                defaults={
+                    'descripcion': (
+                        f'Salida temprana automática. Hora de salida programada: '
+                        f'{horario.hora_salida.strftime("%H:%M")}, '
+                        f'hora registrada: {hora_actual.strftime("%H:%M")} '
+                        f'({minutos} min antes).'
+                    ),
+                },
+            )
+            return incidencia
+        return None
+
+    def _sumar_minutos(self, hora, minutos):
+        """Suma minutos a un objeto time."""
+        dt = datetime.combine(date.today(), hora) + timedelta(minutes=minutos)
+        return dt.time()
+
+    def _restar_minutos(self, hora, minutos):
+        """Resta minutos a un objeto time."""
+        dt = datetime.combine(date.today(), hora) - timedelta(minutes=minutos)
+        return dt.time()
+
+    def _diferencia_minutos(self, hora_menor, hora_mayor):
+        """Calcula la diferencia en minutos entre dos objetos time."""
+        dt1 = datetime.combine(date.today(), hora_menor)
+        dt2 = datetime.combine(date.today(), hora_mayor)
+        return int((dt2 - dt1).total_seconds() / 60)
+
+
+# ──────────────────────────────────────────────
+# ESTADO DE ASISTENCIA DE HOY
+# ──────────────────────────────────────────────
+
+class EstadoAsistenciaHoyView(APIView):
+    """
+    GET /api/asistencia/estado-hoy/
+    Devuelve el estado de asistencia del usuario para el día actual.
+    Incluye auto-salida si la entrada tiene más de AUTO_SALIDA_HORAS.
+    """
+    permission_classes = [EsUsuarioAutenticado]
+
+    def get(self, request):
+        usuario = request.usuario
+        hoy = timezone.localtime().date()
+
+        entrada = Asistencia.objects.filter(
+            usuario=usuario,
+            tipo=Asistencia.Tipo.ENTRADA,
+            fecha_hora__date=hoy,
+            valido=True,
+        ).first()
+
+        salida = Asistencia.objects.filter(
+            usuario=usuario,
+            tipo=Asistencia.Tipo.SALIDA,
+            fecha_hora__date=hoy,
+            valido=True,
+        ).first()
+
+        # ── Auto-salida: si la entrada tiene más de AUTO_SALIDA_HORAS y no hay salida ──
+        if entrada and not salida:
+            ahora = timezone.localtime()
+            horas_transcurridas = (ahora - entrada.fecha_hora).total_seconds() / 3600
+            if horas_transcurridas >= AUTO_SALIDA_HORAS:
+                # Registrar salida automática
+                salida = Asistencia.objects.create(
+                    usuario=usuario,
+                    perimetro=entrada.perimetro,
+                    tipo=Asistencia.Tipo.SALIDA,
+                    latitud_real=entrada.latitud_real,
+                    longitud_real=entrada.longitud_real,
+                    valido=True,
+                    distancia_metros=entrada.distancia_metros,
+                )
+                # Crear incidencia de salida automática
+                Incidencia.objects.get_or_create(
+                    usuario=usuario,
+                    tipo=Incidencia.Tipo.SALIDA_TEMPRANA,
+                    fecha=hoy,
+                    defaults={
+                        'descripcion': (
+                            f'Salida automática registrada por el sistema. '
+                            f'Pasaron {int(horas_transcurridas)} horas desde la entrada '
+                            f'sin registrar salida manualmente.'
+                        ),
+                    },
+                )
+
+        return Response({
+            'entrada_registrada': entrada is not None,
+            'salida_registrada': salida is not None,
+            'entrada': AsistenciaSerializer(entrada).data if entrada else None,
+            'salida': AsistenciaSerializer(salida).data if salida else None,
+            'fecha': str(hoy),
+        })
 
 
 # ──────────────────────────────────────────────
@@ -226,4 +439,35 @@ class IncidenciaViewSet(viewsets.ModelViewSet):
             qs = qs.filter(fecha=fecha)
 
         return qs
+
+
+# ──────────────────────────────────────────────
+# ADMIN: REDES AUTORIZADAS (Req. 6)
+# ──────────────────────────────────────────────
+
+class RedAutorizadaViewSet(viewsets.ModelViewSet):
+    """
+    CRUD de redes Wi-Fi autorizadas. Solo administradores.
+    GET  /api/asistencia/redes/        → Lista todas
+    POST /api/asistencia/redes/        → Crear nueva
+    GET  /api/asistencia/redes/{id}/   → Detalle
+    PUT  /api/asistencia/redes/{id}/   → Actualizar
+    DEL  /api/asistencia/redes/{id}/   → Eliminar
+    """
+    queryset = RedAutorizada.objects.all().order_by('-created_at')
+    serializer_class = RedAutorizadaSerializer
+    permission_classes = [EsAdministrador]
+
+
+class RedesActivasView(APIView):
+    """
+    GET /api/asistencia/redes-activas/
+    Endpoint público (autenticado) para que el frontend sepa
+    qué redes Wi-Fi están autorizadas (para mostrar estado).
+    """
+    permission_classes = [EsUsuarioAutenticado]
+
+    def get(self, request):
+        redes = RedAutorizada.objects.filter(activo=True).values('ssid', 'bssid', 'nombre')
+        return Response(list(redes))
 

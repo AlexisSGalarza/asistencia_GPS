@@ -1,6 +1,15 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:latlong2/latlong.dart' hide Path;
+import 'package:network_info_plus/network_info_plus.dart';
+import 'package:permission_handler/permission_handler.dart';
+import '../../services/api_service.dart';
 import '../login/login_screen.dart';
+import 'horario_screen.dart';
+import 'registros_screen.dart';
+import 'perfil_screen.dart';
 
 class MarcarAsistenciaScreen extends StatefulWidget {
   const MarcarAsistenciaScreen({super.key});
@@ -17,6 +26,24 @@ class _MarcarAsistenciaScreenState extends State<MarcarAsistenciaScreen> {
   String _fechaActual = '';
   Timer? _timer;
 
+  // Ubicación
+  LatLng? _ubicacionActual;
+  bool _cargandoUbicacion = true;
+  String? _errorUbicacion;
+  final MapController _mapController = MapController();
+
+  // Perímetro del campus (se cargará del backend)
+  final LatLng _centroCampus = const LatLng(20.659698, -103.349609);
+  final double _radioPerimetro = 100.0; // metros
+
+  // WiFi
+  String _wifiSSID = '';
+  String _wifiBSSID = '';
+  bool _wifiAutorizada = false;
+  bool _cargandoWifi = true;
+  String? _errorWifi;
+  List<dynamic> _redesAutorizadas = [];
+
   @override
   void initState() {
     super.initState();
@@ -24,6 +51,102 @@ class _MarcarAsistenciaScreenState extends State<MarcarAsistenciaScreen> {
     _timer = Timer.periodic(const Duration(seconds: 1), (_) {
       _actualizarReloj();
     });
+    _obtenerUbicacion();
+    _cargarEstadoHoy();
+    _cargarRedesYDetectarWifi();
+  }
+
+  /// Carga las redes autorizadas y luego detecta la WiFi actual.
+  Future<void> _cargarRedesYDetectarWifi() async {
+    try {
+      _redesAutorizadas = await ApiService.getRedesActivas();
+    } catch (_) {}
+    await _detectarWifi();
+  }
+
+  /// Detecta la red Wi-Fi actual y valida contra las autorizadas.
+  Future<void> _detectarWifi() async {
+    setState(() {
+      _cargandoWifi = true;
+      _errorWifi = null;
+    });
+
+    try {
+      // Solicitar permiso de ubicación (requerido para WiFi info en Android 8+)
+      final locationStatus = await Permission.location.request();
+      if (!locationStatus.isGranted) {
+        setState(() {
+          _cargandoWifi = false;
+          _errorWifi = 'Permiso de ubicación necesario para detectar WiFi';
+          _wifiAutorizada = false;
+        });
+        return;
+      }
+
+      final info = NetworkInfo();
+      String? ssid = await info.getWifiName();
+      String? bssid = await info.getWifiBSSID();
+
+      // Limpiar comillas del SSID (Android lo envuelve en comillas)
+      ssid = ssid?.replaceAll('"', '').trim() ?? '';
+      bssid = bssid?.trim().toUpperCase() ?? '';
+
+      // Verificar si no hay WiFi
+      if (ssid.isEmpty || ssid == '<unknown ssid>' || ssid == '0x') {
+        setState(() {
+          _wifiSSID = '';
+          _wifiBSSID = '';
+          _wifiAutorizada = false;
+          _cargandoWifi = false;
+          _errorWifi = 'No conectado a Wi-Fi';
+        });
+        return;
+      }
+
+      // Validar contra redes autorizadas
+      bool autorizada = false;
+      for (final red in _redesAutorizadas) {
+        final redBssid = (red['bssid'] ?? '').toString().toUpperCase();
+        final redSsid = (red['ssid'] ?? '').toString();
+        if (bssid.isNotEmpty && bssid == redBssid) {
+          autorizada = true;
+          break;
+        }
+        if (ssid == redSsid) {
+          autorizada = true;
+          break;
+        }
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _wifiSSID = ssid!;
+        _wifiBSSID = bssid!;
+        _wifiAutorizada = autorizada;
+        _cargandoWifi = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _cargandoWifi = false;
+        _errorWifi = 'Error al detectar Wi-Fi';
+        _wifiAutorizada = false;
+      });
+    }
+  }
+
+  /// Consulta al backend si ya hay entrada/salida registrada hoy.
+  Future<void> _cargarEstadoHoy() async {
+    try {
+      final estado = await ApiService.getEstadoHoy();
+      if (!mounted) return;
+      setState(() {
+        _entradaRegistrada = estado['entrada_registrada'] == true;
+        _salidaRegistrada = estado['salida_registrada'] == true;
+      });
+    } catch (_) {
+      // Si falla la consulta, se queda en el estado por defecto
+    }
   }
 
   void _actualizarReloj() {
@@ -32,12 +155,27 @@ class _MarcarAsistenciaScreenState extends State<MarcarAsistenciaScreen> {
       _horaActual =
           '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}';
       final meses = [
-        'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
-        'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'
+        'Enero',
+        'Febrero',
+        'Marzo',
+        'Abril',
+        'Mayo',
+        'Junio',
+        'Julio',
+        'Agosto',
+        'Septiembre',
+        'Octubre',
+        'Noviembre',
+        'Diciembre',
       ];
       final dias = [
-        'Lunes', 'Martes', 'Miércoles', 'Jueves',
-        'Viernes', 'Sábado', 'Domingo'
+        'Lunes',
+        'Martes',
+        'Miércoles',
+        'Jueves',
+        'Viernes',
+        'Sábado',
+        'Domingo',
       ];
       _fechaActual =
           '${dias[now.weekday - 1]}, ${now.day} de ${meses[now.month - 1]} ${now.year}';
@@ -48,6 +186,174 @@ class _MarcarAsistenciaScreenState extends State<MarcarAsistenciaScreen> {
   void dispose() {
     _timer?.cancel();
     super.dispose();
+  }
+
+  /// Obtiene la ubicación GPS del dispositivo.
+  Future<void> _obtenerUbicacion() async {
+    setState(() {
+      _cargandoUbicacion = true;
+      _errorUbicacion = null;
+    });
+
+    try {
+      // Verificar si el servicio de ubicación está habilitado
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        setState(() {
+          _cargandoUbicacion = false;
+          _errorUbicacion = 'Activa el servicio de ubicación';
+        });
+        return;
+      }
+
+      // Verificar y solicitar permisos
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied) {
+          setState(() {
+            _cargandoUbicacion = false;
+            _errorUbicacion = 'Permiso de ubicación denegado';
+          });
+          return;
+        }
+      }
+
+      if (permission == LocationPermission.deniedForever) {
+        setState(() {
+          _cargandoUbicacion = false;
+          _errorUbicacion = 'Permiso de ubicación denegado permanentemente';
+        });
+        return;
+      }
+
+      // Obtener posición actual con timeout
+      Position position = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          distanceFilter: 5,
+        ),
+      ).timeout(
+        const Duration(seconds: 15),
+        onTimeout: () => throw TimeoutException('Tiempo de espera agotado'),
+      );
+
+      if (!mounted) return;
+
+      final nuevaUbicacion = LatLng(position.latitude, position.longitude);
+
+      // Calcular si está dentro del perímetro
+      final distancia = const Distance().as(
+        LengthUnit.Meter,
+        nuevaUbicacion,
+        _centroCampus,
+      );
+
+      setState(() {
+        _ubicacionActual = nuevaUbicacion;
+        _cargandoUbicacion = false;
+        _dentroDelPerimetro = distancia <= _radioPerimetro;
+      });
+
+      // Centrar mapa en la ubicación
+      _mapController.move(nuevaUbicacion, 17.0);
+    } on TimeoutException {
+      if (!mounted) return;
+      setState(() {
+        _cargandoUbicacion = false;
+        _errorUbicacion = 'Tiempo agotado. Revisa tu GPS e intenta de nuevo';
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _cargandoUbicacion = false;
+        _errorUbicacion = 'Error al obtener ubicación. Revisa que el GPS esté activo';
+      });
+    }
+  }
+
+  /// Registra asistencia llamando al backend.
+  Future<void> _registrarAsistencia(String tipo) async {
+    // Usar coordenadas reales del GPS
+    final double lat = _ubicacionActual?.latitude ?? 20.659698;
+    final double lng = _ubicacionActual?.longitude ?? -103.349609;
+
+    try {
+      final result = await ApiService.registrarAsistencia(
+        tipo: tipo,
+        latitud: lat,
+        longitud: lng,
+        ssid: _wifiSSID,
+        bssid: _wifiBSSID,
+      );
+
+      if (!mounted) return;
+
+      if (result['success'] == true) {
+        final data = result['data'];
+        final valido = data['valido'] == true;
+        final estadoHorario = data['estado_horario'] ?? '';
+        setState(() {
+          if (tipo == 'entrada') {
+            _entradaRegistrada = true;
+          } else {
+            _salidaRegistrada = true;
+          }
+          _dentroDelPerimetro = valido;
+        });
+
+        // Determinar color e ícono según estado del horario
+        Color alertColor;
+        IconData alertIcon;
+        String alertTitulo;
+
+        if (!valido) {
+          alertColor = const Color(0xFFC62828);
+          alertIcon = Icons.wrong_location;
+          alertTitulo = 'Fuera del perímetro';
+        } else if (estadoHorario == 'retardo') {
+          alertColor = const Color(0xFFE65100);
+          alertIcon = Icons.warning_amber_rounded;
+          alertTitulo = 'Retardo registrado';
+        } else if (estadoHorario == 'salida_temprana') {
+          alertColor = const Color(0xFFE65100);
+          alertIcon = Icons.warning_amber_rounded;
+          alertTitulo = 'Salida temprana';
+        } else if (estadoHorario == 'sin_horario') {
+          alertColor = const Color(0xFF1565C0);
+          alertIcon = Icons.info_outline;
+          alertTitulo = 'Sin horario hoy';
+        } else {
+          alertColor = const Color(0xFF2E7D32);
+          alertIcon = Icons.check_circle;
+          alertTitulo = tipo == 'entrada'
+              ? 'Entrada a tiempo'
+              : 'Salida registrada';
+        }
+
+        _mostrarAlerta(
+          titulo: alertTitulo,
+          mensaje: data['mensaje'] ?? 'Registrado correctamente',
+          color: alertColor,
+          icono: alertIcon,
+        );
+      } else {
+        _mostrarAlerta(
+          titulo: 'Error',
+          mensaje: result['mensaje'] ?? 'No se pudo registrar',
+          color: const Color(0xFFC62828),
+          icono: Icons.error,
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      _mostrarAlerta(
+        titulo: 'Error de conexión',
+        mensaje: 'No se pudo conectar con el servidor',
+        color: const Color(0xFFC62828),
+        icono: Icons.wifi_off,
+      );
+    }
   }
 
   @override
@@ -66,6 +372,8 @@ class _MarcarAsistenciaScreenState extends State<MarcarAsistenciaScreen> {
               const SizedBox(height: 20),
               _buildFechaHora(),
               const SizedBox(height: 15),
+              _buildWifiEstado(),
+              const SizedBox(height: 10),
               _buildEstado(),
               const SizedBox(height: 20),
               _buildBotones(size),
@@ -85,29 +393,36 @@ class _MarcarAsistenciaScreenState extends State<MarcarAsistenciaScreen> {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: const [
-              Text(
-                'Hello!',
-                style: TextStyle(
-                  fontFamily: 'Merriweather',
-                  fontSize: 28,
-                  fontWeight: FontWeight.bold,
-                  color: Color(0xFF6B2D8B),
+          Flexible(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Hello!',
+                  style: TextStyle(
+                    fontFamily: 'Merriweather',
+                    fontSize: 28,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF6B2D8B),
+                  ),
                 ),
-              ),
-              Text(
-                'Welcome Teacher',
-                style: TextStyle(
-                  fontFamily: 'Merriweather',
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                  color: Color(0xFF3D3D3D),
+                Text(
+                  ApiService.nombreUsuario.isNotEmpty
+                      ? ApiService.nombreUsuario
+                      : 'Welcome Teacher',
+                  overflow: TextOverflow.ellipsis,
+                  maxLines: 1,
+                  style: TextStyle(
+                    fontFamily: 'Merriweather',
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF3D3D3D),
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
+          const SizedBox(width: 10),
           Container(
             width: 60,
             height: 60,
@@ -120,7 +435,11 @@ class _MarcarAsistenciaScreenState extends State<MarcarAsistenciaScreen> {
                 'assets/images/teacher.png',
                 fit: BoxFit.cover,
                 errorBuilder: (context, error, stackTrace) {
-                  return const Icon(Icons.person, size: 35, color: Color(0xFF6B2D8B));
+                  return const Icon(
+                    Icons.person,
+                    size: 35,
+                    color: Color(0xFF6B2D8B),
+                  );
                 },
               ),
             ),
@@ -130,58 +449,208 @@ class _MarcarAsistenciaScreenState extends State<MarcarAsistenciaScreen> {
     );
   }
 
-  // ---------- Mapa con forma de mancha ----------
+  // ---------- Mapa real con OpenStreetMap ----------
   Widget _buildMapaBlob(Size size) {
+    final LatLng centro =
+        _ubicacionActual ?? _centroCampus;
+
     return Center(
       child: SizedBox(
         width: size.width * 0.88,
         height: size.height * 0.30,
         child: ClipPath(
           clipper: _BlobClipper(),
-          child: Container(
-            decoration: const BoxDecoration(
-              color: Colors.white,
-            ),
-            child: Stack(
-              children: [
-                // Marcador de posición del mapa
+          child: Stack(
+            children: [
+              if (_cargandoUbicacion)
                 Container(
                   color: const Color(0xFFE8E0EF),
                   child: const Center(
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        Icon(Icons.map_outlined, size: 50, color: Color(0xFFA98BC3)),
-                        SizedBox(height: 8),
+                        CircularProgressIndicator(
+                          color: Color(0xFF6B2D8B),
+                          strokeWidth: 2.5,
+                        ),
+                        SizedBox(height: 12),
                         Text(
-                          'Tu ubicación',
+                          'Obteniendo ubicación...',
                           style: TextStyle(
                             fontFamily: 'Merriweather',
-                            fontSize: 15,
+                            fontSize: 13,
                             color: Color(0xFF6B2D8B),
                           ),
-                        ),
-                        SizedBox(height: 4),
-                        Text(
-                          'Mapa en tiempo real',
-                          style: TextStyle(fontSize: 11, color: Color(0xFF9E9E9E)),
                         ),
                       ],
                     ),
                   ),
+                )
+              else if (_errorUbicacion != null)
+                Container(
+                  color: const Color(0xFFE8E0EF),
+                  child: Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const Icon(
+                          Icons.location_off,
+                          size: 40,
+                          color: Color(0xFFC62828),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          _errorUbicacion!,
+                          style: const TextStyle(
+                            fontFamily: 'Merriweather',
+                            fontSize: 12,
+                            color: Color(0xFFC62828),
+                          ),
+                          textAlign: TextAlign.center,
+                        ),
+                        const SizedBox(height: 10),
+                        ElevatedButton.icon(
+                          onPressed: _obtenerUbicacion,
+                          icon: const Icon(Icons.refresh, size: 16),
+                          label: const Text(
+                            'Reintentar',
+                            style: TextStyle(
+                              fontFamily: 'Merriweather',
+                              fontSize: 12,
+                            ),
+                          ),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF6B2D8B),
+                            foregroundColor: Colors.white,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                )
+              else
+                FlutterMap(
+                  mapController: _mapController,
+                  options: MapOptions(
+                    initialCenter: centro,
+                    initialZoom: 17.0,
+                    interactionOptions: const InteractionOptions(
+                      flags: InteractiveFlag.all & ~InteractiveFlag.rotate,
+                    ),
+                  ),
+                  children: [
+                    TileLayer(
+                      urlTemplate:
+                          'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                      userAgentPackageName: 'com.example.asistencia_gps',
+                    ),
+                    // Círculo del perímetro
+                    CircleLayer(
+                      circles: [
+                        CircleMarker(
+                          point: _centroCampus,
+                          radius: _radioPerimetro,
+                          useRadiusInMeter: true,
+                          color: _dentroDelPerimetro
+                              ? const Color(0xFF2E7D32)
+                                  .withValues(alpha: 0.15)
+                              : const Color(0xFFC62828)
+                                  .withValues(alpha: 0.15),
+                          borderColor: _dentroDelPerimetro
+                              ? const Color(0xFF2E7D32)
+                              : const Color(0xFFC62828),
+                          borderStrokeWidth: 2,
+                        ),
+                      ],
+                    ),
+                    // Marcador del usuario
+                    if (_ubicacionActual != null)
+                      MarkerLayer(
+                        markers: [
+                          Marker(
+                            point: _ubicacionActual!,
+                            width: 40,
+                            height: 40,
+                            child: Container(
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF6B2D8B),
+                                shape: BoxShape.circle,
+                                border: Border.all(
+                                  color: Colors.white,
+                                  width: 3,
+                                ),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: const Color(0xFF6B2D8B)
+                                        .withValues(alpha: 0.4),
+                                    blurRadius: 8,
+                                    offset: const Offset(0, 3),
+                                  ),
+                                ],
+                              ),
+                              child: const Icon(
+                                Icons.person,
+                                color: Colors.white,
+                                size: 20,
+                              ),
+                            ),
+                          ),
+                          // Marcador del centro del campus
+                          Marker(
+                            point: _centroCampus,
+                            width: 30,
+                            height: 30,
+                            child: Container(
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFE8A0BF),
+                                shape: BoxShape.circle,
+                                border: Border.all(
+                                  color: Colors.white,
+                                  width: 2,
+                                ),
+                              ),
+                              child: const Icon(
+                                Icons.school,
+                                color: Colors.white,
+                                size: 16,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                  ],
                 ),
-                // Botón mi ubicación
-                const Positioned(
-                  top: 15,
-                  right: 15,
-                  child: CircleAvatar(
-                    backgroundColor: Color(0xFFA98BC3),
-                    radius: 16,
-                    child: Icon(Icons.my_location, color: Colors.white, size: 18),
+              // Botón mi ubicación
+              Positioned(
+                top: 15,
+                right: 15,
+                child: GestureDetector(
+                  onTap: _obtenerUbicacion,
+                  child: Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      shape: BoxShape.circle,
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.2),
+                          blurRadius: 6,
+                          offset: const Offset(0, 2),
+                        ),
+                      ],
+                    ),
+                    child: const Icon(
+                      Icons.my_location,
+                      color: Color(0xFF6B2D8B),
+                      size: 20,
+                    ),
                   ),
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
         ),
       ),
@@ -211,27 +680,124 @@ class _MarcarAsistenciaScreenState extends State<MarcarAsistenciaScreen> {
           const SizedBox(width: 12),
           Column(
             children: [
-              Text(
-                _horaActual,
-                style: const TextStyle(
-                  fontFamily: 'Merriweather',
-                  fontSize: 28,
-                  fontWeight: FontWeight.bold,
-                  color: Color(0xFF6B2D8B),
+              FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Text(
+                  _horaActual,
+                  style: const TextStyle(
+                    fontFamily: 'Merriweather',
+                    fontSize: 28,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF6B2D8B),
+                  ),
                 ),
               ),
               const SizedBox(height: 2),
-              Text(
-                _fechaActual,
-                style: const TextStyle(
-                  fontFamily: 'Merriweather',
-                  fontSize: 12,
-                  color: Color(0xFF757575),
+              FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Text(
+                  _fechaActual,
+                  style: const TextStyle(
+                    fontFamily: 'Merriweather',
+                    fontSize: 12,
+                    color: Color(0xFF757575),
+                  ),
                 ),
               ),
             ],
           ),
         ],
+      ),
+    );
+  }
+
+  // ---------- Estado Wi-Fi ----------
+  Widget _buildWifiEstado() {
+    String texto;
+    Color color;
+    IconData icono;
+    String subtexto = '';
+
+    if (_cargandoWifi) {
+      texto = 'Detectando Wi-Fi...';
+      color = const Color(0xFF757575);
+      icono = Icons.wifi_find;
+    } else if (_errorWifi != null) {
+      texto = _errorWifi!;
+      color = const Color(0xFFC62828);
+      icono = Icons.wifi_off;
+    } else if (_wifiAutorizada) {
+      texto = 'Red autorizada';
+      color = const Color(0xFF2E7D32);
+      icono = Icons.wifi;
+      subtexto = _wifiSSID;
+    } else {
+      texto = 'Red no autorizada';
+      color = const Color(0xFFC62828);
+      icono = Icons.wifi_lock;
+      subtexto = _wifiSSID.isNotEmpty ? _wifiSSID : 'Sin conexión';
+    }
+
+    return GestureDetector(
+      onTap: _detectarWifi,
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 30),
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(20),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.grey.withValues(alpha: 0.1),
+              blurRadius: 8,
+              offset: const Offset(0, 3),
+            ),
+          ],
+        ),
+        child: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: color.withValues(alpha: 0.12),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(icono, color: color, size: 22),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    texto,
+                    style: TextStyle(
+                      fontFamily: 'Merriweather',
+                      fontSize: 13,
+                      fontWeight: FontWeight.bold,
+                      color: color,
+                    ),
+                  ),
+                  if (subtexto.isNotEmpty)
+                    Text(
+                      subtexto,
+                      style: const TextStyle(
+                        fontFamily: 'Merriweather',
+                        fontSize: 11,
+                        color: Color(0xFF757575),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            if (!_cargandoWifi)
+              Icon(
+                Icons.refresh,
+                color: Colors.grey[400],
+                size: 18,
+              ),
+          ],
+        ),
       ),
     );
   }
@@ -246,6 +812,10 @@ class _MarcarAsistenciaScreenState extends State<MarcarAsistenciaScreen> {
       texto = 'Fuera del perímetro';
       color = const Color(0xFFC62828);
       icono = Icons.cancel;
+    } else if (!_wifiAutorizada && !_cargandoWifi) {
+      texto = 'Red Wi-Fi no autorizada';
+      color = const Color(0xFFE65100);
+      icono = Icons.wifi_off;
     } else if (_salidaRegistrada) {
       texto = 'Jornada completada';
       color = const Color(0xFF2E7D32);
@@ -255,7 +825,7 @@ class _MarcarAsistenciaScreenState extends State<MarcarAsistenciaScreen> {
       color = const Color(0xFF1565C0);
       icono = Icons.check_circle_outline;
     } else {
-      texto = 'Dentro del perímetro';
+      texto = 'Listo para registrar';
       color = const Color(0xFF2E7D32);
       icono = Icons.check_circle;
     }
@@ -295,11 +865,11 @@ class _MarcarAsistenciaScreenState extends State<MarcarAsistenciaScreen> {
 
   // ---------- Botones de registro ----------
   Widget _buildBotones(Size size) {
-    // Entrada activa si: está dentro del perímetro Y no ha registrado entrada
-    final bool entradaActiva = _dentroDelPerimetro && !_entradaRegistrada;
-    // Salida activa si: está dentro del perímetro Y ya registró entrada Y no ha registrado salida
+    // Entrada activa si: está dentro del perímetro Y WiFi autorizada Y no ha registrado entrada
+    final bool entradaActiva = _dentroDelPerimetro && _wifiAutorizada && !_entradaRegistrada;
+    // Salida activa si: está dentro del perímetro Y WiFi autorizada Y ya registró entrada Y no ha registrado salida
     final bool salidaActiva =
-        _dentroDelPerimetro && _entradaRegistrada && !_salidaRegistrada;
+        _dentroDelPerimetro && _wifiAutorizada && _entradaRegistrada && !_salidaRegistrada;
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 30),
@@ -322,7 +892,9 @@ class _MarcarAsistenciaScreenState extends State<MarcarAsistenciaScreen> {
                   boxShadow: entradaActiva
                       ? [
                           BoxShadow(
-                            color: const Color(0xFFA98BC3).withValues(alpha: 0.4),
+                            color: const Color(
+                              0xFFA98BC3,
+                            ).withValues(alpha: 0.4),
                             blurRadius: 10,
                             offset: const Offset(0, 5),
                           ),
@@ -331,17 +903,7 @@ class _MarcarAsistenciaScreenState extends State<MarcarAsistenciaScreen> {
                 ),
                 child: ElevatedButton.icon(
                   onPressed: entradaActiva
-                      ? () {
-                          setState(() {
-                            _entradaRegistrada = true;
-                          });
-                          _mostrarAlerta(
-                            titulo: 'Entrada registrada',
-                            mensaje: 'Tu entrada ha sido registrada correctamente a las $_horaActual',
-                            color: const Color(0xFF2E7D32),
-                            icono: Icons.login,
-                          );
-                        }
+                      ? () => _registrarAsistencia('entrada')
                       : null,
                   icon: Icon(
                     Icons.login,
@@ -386,7 +948,9 @@ class _MarcarAsistenciaScreenState extends State<MarcarAsistenciaScreen> {
                   boxShadow: salidaActiva
                       ? [
                           BoxShadow(
-                            color: const Color(0xFF6B2D8B).withValues(alpha: 0.3),
+                            color: const Color(
+                              0xFF6B2D8B,
+                            ).withValues(alpha: 0.3),
                             blurRadius: 10,
                             offset: const Offset(0, 5),
                           ),
@@ -395,17 +959,7 @@ class _MarcarAsistenciaScreenState extends State<MarcarAsistenciaScreen> {
                 ),
                 child: ElevatedButton.icon(
                   onPressed: salidaActiva
-                      ? () {
-                          setState(() {
-                            _salidaRegistrada = true;
-                          });
-                          _mostrarAlerta(
-                            titulo: 'Salida registrada',
-                            mensaje: 'Tu salida ha sido registrada correctamente a las $_horaActual',
-                            color: const Color(0xFF6B2D8B),
-                            icono: Icons.logout,
-                          );
-                        }
+                      ? () => _registrarAsistencia('salida')
                       : null,
                   icon: Icon(
                     Icons.logout,
@@ -506,6 +1060,103 @@ class _MarcarAsistenciaScreenState extends State<MarcarAsistenciaScreen> {
     );
   }
 
+  // ---------- Confirmar logout ----------
+  void _mostrarConfirmarLogout() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CircleAvatar(
+              backgroundColor: const Color(0xFFC62828).withValues(alpha: 0.15),
+              radius: 35,
+              child: const Icon(Icons.logout, color: Color(0xFFC62828), size: 35),
+            ),
+            const SizedBox(height: 18),
+            const Text(
+              '¿Cerrar sesión?',
+              style: TextStyle(
+                fontFamily: 'Merriweather',
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+                color: Color(0xFF3D3D3D),
+              ),
+            ),
+            const SizedBox(height: 10),
+            const Text(
+              '¿Estás seguro de que deseas cerrar tu sesión?',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontFamily: 'Merriweather',
+                fontSize: 13,
+                color: Color(0xFF757575),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  style: OutlinedButton.styleFrom(
+                    side: const BorderSide(color: Color(0xFF6B2D8B)),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(15),
+                    ),
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                  ),
+                  child: const Text(
+                    'Cancelar',
+                    style: TextStyle(
+                      fontFamily: 'Merriweather',
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold,
+                      color: Color(0xFF6B2D8B),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: ElevatedButton(
+                  onPressed: () {
+                    ApiService.logout().then((_) {
+                      Navigator.pop(ctx);
+                      Navigator.pushReplacement(
+                        context,
+                        MaterialPageRoute(builder: (_) => const LoginScreen()),
+                      );
+                    });
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFC62828),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(15),
+                    ),
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                  ),
+                  child: const Text(
+                    'Salir',
+                    style: TextStyle(
+                      fontFamily: 'Merriweather',
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
   // ---------- Barra de navegación inferior ----------
   Widget _buildBottomNav() {
     return Container(
@@ -531,11 +1182,23 @@ class _MarcarAsistenciaScreenState extends State<MarcarAsistenciaScreen> {
         child: BottomNavigationBar(
           currentIndex: 0,
           onTap: (index) {
-            if (index == 4) {
+            if (index == 1) {
               Navigator.pushReplacement(
                 context,
-                MaterialPageRoute(builder: (_) => const LoginScreen()),
+                MaterialPageRoute(builder: (_) => const HorarioScreen()),
               );
+            } else if (index == 2) {
+              Navigator.pushReplacement(
+                context,
+                MaterialPageRoute(builder: (_) => const RegistrosScreen()),
+              );
+            } else if (index == 3) {
+              Navigator.pushReplacement(
+                context,
+                MaterialPageRoute(builder: (_) => const PerfilScreen()),
+              );
+            } else if (index == 4) {
+              _mostrarConfirmarLogout();
             }
           },
           type: BottomNavigationBarType.fixed,

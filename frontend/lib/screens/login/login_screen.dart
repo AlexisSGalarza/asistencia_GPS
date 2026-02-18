@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import '../../services/api_service.dart';
 import '../maestro/marcar_asistencia_screen.dart';
+import 'recuperar_password_screen.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -12,6 +14,7 @@ class _LoginScreenState extends State<LoginScreen> {
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   bool _obscurePassword = true;
+  bool _isLoading = false;
 
   @override
   void dispose() {
@@ -64,23 +67,31 @@ class _LoginScreenState extends State<LoginScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  'Hello!',
-                  style: TextStyle(
-                    fontFamily: 'Merriweather',
-                    fontSize: 36,
-                    fontWeight: FontWeight.bold,
-                    color: const Color(0xFF6B2D8B),
+                FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    'Hello!',
+                    style: TextStyle(
+                      fontFamily: 'Merriweather',
+                      fontSize: 36,
+                      fontWeight: FontWeight.bold,
+                      color: const Color(0xFF6B2D8B),
+                    ),
                   ),
                 ),
                 const SizedBox(height: 5),
-                Text(
-                  'Welcome back, Teacher',
-                  style: TextStyle(
-                    fontFamily: 'Merriweather',
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold,
-                    color: const Color(0xFF3D3D3D),
+                FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    'Welcome back, Teacher',
+                    style: TextStyle(
+                      fontFamily: 'Merriweather',
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                      color: const Color(0xFF3D3D3D),
+                    ),
                   ),
                 ),
               ],
@@ -132,13 +143,17 @@ class _LoginScreenState extends State<LoginScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           // Título "Login"
-          Text(
-            'Login',
-            style: TextStyle(
-              fontFamily: 'Merriweather',
-              fontSize: 28,
-              fontWeight: FontWeight.bold,
-              color: const Color(0xFF3D3D3D),
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: Text(
+              'Login',
+              style: TextStyle(
+                fontFamily: 'Merriweather',
+                fontSize: 28,
+                fontWeight: FontWeight.bold,
+                color: const Color(0xFF3D3D3D),
+              ),
             ),
           ),
           const SizedBox(height: 25),
@@ -243,7 +258,12 @@ class _LoginScreenState extends State<LoginScreen> {
             alignment: Alignment.centerRight,
             child: TextButton(
               onPressed: () {
-                // TODO: Navegar a pantalla de recuperar contraseña
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => const RecuperarPasswordScreen(),
+                  ),
+                );
               },
               child: Text(
                 'Forgot Password?',
@@ -279,10 +299,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 ],
               ),
               child: ElevatedButton(
-                onPressed: () {
-                  // TODO: Conectar con el backend para login
-                  _handleLogin();
-                },
+                onPressed: _isLoading ? null : _handleLogin,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.transparent,
                   shadowColor: Colors.transparent,
@@ -290,15 +307,24 @@ class _LoginScreenState extends State<LoginScreen> {
                     borderRadius: BorderRadius.circular(30),
                   ),
                 ),
-                child: Text(
-                  'Login',
-                  style: TextStyle(
-                    fontFamily: 'Merriweather',
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.white,
-                  ),
-                ),
+                child: _isLoading
+                    ? const SizedBox(
+                        width: 24,
+                        height: 24,
+                        child: CircularProgressIndicator(
+                          color: Colors.white,
+                          strokeWidth: 2.5,
+                        ),
+                      )
+                    : Text(
+                        'Login',
+                        style: TextStyle(
+                          fontFamily: 'Merriweather',
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white,
+                        ),
+                      ),
               ),
             ),
           ),
@@ -308,8 +334,8 @@ class _LoginScreenState extends State<LoginScreen> {
     );
   }
 
-  // ---------- Función de login (por ahora solo imprime) ----------
-  void _handleLogin() {
+  // ---------- Función de login conectada al backend ----------
+  Future<void> _handleLogin() async {
     final email = _emailController.text.trim();
     final password = _passwordController.text.trim();
 
@@ -323,11 +349,36 @@ class _LoginScreenState extends State<LoginScreen> {
       return;
     }
 
-    // TODO: Aquí se conectará con el backend
-    // Por ahora navega directo a la pantalla del maestro
-    Navigator.pushReplacement(
-      context,
-      MaterialPageRoute(builder: (_) => const MarcarAsistenciaScreen()),
-    );
+    setState(() => _isLoading = true);
+
+    try {
+      final result = await ApiService.login(email, password);
+
+      if (!mounted) return;
+      setState(() => _isLoading = false);
+
+      if (result['success'] == true) {
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (_) => const MarcarAsistenciaScreen()),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(result['mensaje'] ?? 'Error al iniciar sesión'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isLoading = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Error de conexión. Verifica tu red.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
   }
 }

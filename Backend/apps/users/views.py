@@ -3,6 +3,9 @@ from rest_framework.response import Response
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny
+from django.core.cache import cache
+import random
+import string
 
 from common.permissions import EsAdministrador, EsSupervisorOAdmin, EsUsuarioAutenticado
 from common.authentication import generar_tokens
@@ -106,6 +109,117 @@ class CambiarPasswordView(APIView):
         request.usuario.save()
 
         return Response({'mensaje': 'Contraseña actualizada correctamente.'})
+
+
+class SolicitarRecuperacionView(APIView):
+    """
+    POST /api/auth/recuperar/solicitar/
+    Recibe un correo. Si existe, genera un código de 6 dígitos
+    válido por 15 minutos y lo devuelve (en producción se enviaría por email).
+    """
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        correo = request.data.get('correo', '').strip().lower()
+        if not correo:
+            return Response(
+                {'error': 'Se requiere el correo electrónico.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            usuario = Usuario.objects.get(correo=correo, activo=True)
+        except Usuario.DoesNotExist:
+            # No revelamos si el correo existe o no (seguridad)
+            return Response({
+                'mensaje': 'Si el correo está registrado, recibirás un código de recuperación.',
+            })
+
+        # Generar código de 6 dígitos
+        codigo = ''.join(random.choices(string.digits, k=6))
+
+        # Guardar en caché por 15 minutos
+        cache_key = f'recovery_{correo}'
+        cache.set(cache_key, {
+            'codigo': codigo,
+            'usuario_id': usuario.id,
+            'intentos': 0,
+        }, timeout=900)  # 15 min
+
+        return Response({
+            'mensaje': 'Si el correo está registrado, recibirás un código de recuperación.',
+            'codigo_debug': codigo,  # ← Solo para desarrollo, quitar en producción
+        })
+
+
+class ConfirmarRecuperacionView(APIView):
+    """
+    POST /api/auth/recuperar/confirmar/
+    Recibe correo, código y nueva contraseña.
+    Valida el código y actualiza la contraseña.
+    """
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        correo = request.data.get('correo', '').strip().lower()
+        codigo = request.data.get('codigo', '').strip()
+        nueva_password = request.data.get('nueva_password', '')
+
+        if not all([correo, codigo, nueva_password]):
+            return Response(
+                {'error': 'Se requieren correo, código y nueva contraseña.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if len(nueva_password) < 6:
+            return Response(
+                {'error': 'La contraseña debe tener al menos 6 caracteres.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        cache_key = f'recovery_{correo}'
+        recovery_data = cache.get(cache_key)
+
+        if not recovery_data:
+            return Response(
+                {'error': 'Código expirado o no solicitado. Solicita uno nuevo.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Máximo 5 intentos
+        if recovery_data['intentos'] >= 5:
+            cache.delete(cache_key)
+            return Response(
+                {'error': 'Demasiados intentos fallidos. Solicita un nuevo código.'},
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+
+        if recovery_data['codigo'] != codigo:
+            recovery_data['intentos'] += 1
+            cache.set(cache_key, recovery_data, timeout=900)
+            intentos_restantes = 5 - recovery_data['intentos']
+            return Response(
+                {'error': f'Código incorrecto. Te quedan {intentos_restantes} intentos.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Código válido: cambiar contraseña
+        try:
+            usuario = Usuario.objects.get(id=recovery_data['usuario_id'])
+            usuario.set_password(nueva_password)
+            usuario.save()
+            cache.delete(cache_key)
+
+            return Response({
+                'mensaje': 'Contraseña actualizada correctamente. Ya puedes iniciar sesión.',
+            })
+        except Usuario.DoesNotExist:
+            return Response(
+                {'error': 'Usuario no encontrado.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
 
 
 # ──────────────────────────────────────────────
