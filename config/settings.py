@@ -141,8 +141,8 @@ else:
 # ─── Email (Gmail SMTP) ──────────────────────────────────────────────────────────
 # Para Gmail: activa verificación en 2 pasos → https://myaccount.google.com/apppasswords
 # Crea una "Contraseña de aplicación" y ponla en EMAIL_HOST_PASSWORD (claves.env o Railway).
-_email_user = env('EMAIL_HOST_USER', default='')
-_email_pass = env('EMAIL_HOST_PASSWORD', default='')
+_email_user = env('EMAIL_HOST_USER', default='').strip()
+_email_pass = env('EMAIL_HOST_PASSWORD', default='').replace(' ', '')
 
 if _email_user and _email_user not in ('', 'tucorreo@gmail.com'):
     # En Railway (producción) el SSL funciona bien; en Mac local puede fallar.
