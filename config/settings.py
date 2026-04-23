@@ -141,23 +141,13 @@ else:
 # ─── Email (Gmail SMTP) ──────────────────────────────────────────────────────────
 # Para Gmail: activa verificación en 2 pasos → https://myaccount.google.com/apppasswords
 # Crea una "Contraseña de aplicación" y ponla en EMAIL_HOST_PASSWORD (claves.env o Railway).
-_email_user = env('EMAIL_HOST_USER', default='').strip()
-_email_pass = env('EMAIL_HOST_PASSWORD', default='').replace(' ', '')
+_resend_api_key = env('RESEND_API_KEY', default='')
 
-if _email_user and _email_user not in ('', 'tucorreo@gmail.com'):
-    # En Railway (producción) el SSL funciona bien; en Mac local puede fallar.
-    # Si falla con SSL, usa el backend sin verificación: common.email_backend.NoSSLVerifyEmailBackend
-    EMAIL_BACKEND = env(
-        'EMAIL_BACKEND',
-        default='common.email_backend.NoSSLVerifyEmailBackend',
-    )
-    EMAIL_HOST = 'smtp.gmail.com'
-    EMAIL_PORT = 587
-    EMAIL_USE_TLS = True
-    EMAIL_USE_SSL = False
-    EMAIL_HOST_USER = _email_user
-    EMAIL_HOST_PASSWORD = _email_pass
-    DEFAULT_FROM_EMAIL = f'Asistencia GPS <{_email_user}>'
+if _resend_api_key:
+    # Producción (Railway): usa Resend vía django-anymail
+    ANYMAIL = {'RESEND_API_KEY': _resend_api_key}
+    EMAIL_BACKEND = 'anymail.backends.resend.EmailBackend'
+    DEFAULT_FROM_EMAIL = 'Asistencia GPS <onboarding@resend.dev>'
 else:
     # Sin credenciales: imprime los correos en la consola del servidor (desarrollo)
     EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
