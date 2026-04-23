@@ -5,10 +5,8 @@ from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny
 from rest_framework.throttling import AnonRateThrottle
 from django.core.cache import cache
-from django.core.mail import send_mail
 from django.core.validators import validate_email
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.conf import settings as django_settings
 import random
 import string
 
@@ -161,10 +159,10 @@ class CambiarPasswordView(APIView):
 
 class SolicitarRecuperacionView(APIView):
     """
-    POST /api/auth/recuperar/solicitar/
-    Recibe un correo. Si existe, genera un código de 6 dígitos
-    válido por 15 minutos y lo envía por email.
-    """
+        POST /api/auth/recuperar/solicitar/
+        Recibe un correo. Si existe, genera un código de 6 dígitos
+        válido por 15 minutos y lo devuelve en la respuesta.
+        """
     permission_classes = [AllowAny]
     authentication_classes = []
     throttle_classes = [RecuperacionRateThrottle]  # Máx 5 solicitudes/min por IP
@@ -177,20 +175,13 @@ class SolicitarRecuperacionView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Bloquear si ya hay un código válido reciente (cooldown de 60s por correo)
-        cooldown_key = f'recovery_cooldown_{correo}'
-        if cache.get(cooldown_key):
-            return Response(
-                {'mensaje': 'Si el correo está registrado, recibirás un código de recuperación.'},
-            )
-
         try:
             usuario = Usuario.objects.get(correo__iexact=correo, activo=True)
         except Usuario.DoesNotExist:
-            # No revelamos si el correo existe o no (seguridad)
-            return Response({
-                'mensaje': 'Si el correo está registrado, recibirás un código de recuperación.',
-            })
+            return Response(
+                {'error': 'No existe una cuenta activa con ese correo.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
 
         # Generar código de 6 dígitos
         codigo = ''.join(random.choices(string.digits, k=6))
@@ -203,37 +194,9 @@ class SolicitarRecuperacionView(APIView):
             'intentos': 0,
         }, timeout=900)  # 15 min
 
-        # Cooldown de 60s para no reenviar continuamente
-        cache.set(cooldown_key, True, timeout=60)
-
-        # Enviar el código por correo electrónico
-        asunto = 'Código de recuperación de contraseña - Asistencia GPS'
-        mensaje = (
-            f'Hola {usuario.nombre},\n\n'
-            f'Tu código de recuperación es:\n\n'
-            f'  {codigo}\n\n'
-            f'Este código expira en 15 minutos.\n'
-            f'Si no solicitaste este código, ignora este correo.\n\n'
-            f'-- Asistencia GPS'
-        )
-
-        try:
-            send_mail(
-                asunto,
-                mensaje,
-                django_settings.DEFAULT_FROM_EMAIL,
-                [correo],
-                fail_silently=False,
-            )
-        except Exception as e:
-            cache.delete(cache_key)
-            return Response(
-                {'error': 'No se pudo enviar el correo. Intenta de nuevo más tarde. Detalle: ' + str(e)},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
-
         return Response({
-            'mensaje': 'Si el correo está registrado, recibirás un código de recuperación.',
+            'mensaje': 'Código generado correctamente.',
+            'codigo': codigo,
         })
 
 
